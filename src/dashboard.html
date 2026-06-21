@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DriveShare</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f1117;--surface:#1a1d27;--surface2:#232736;--border:#2e3348;--text:#e1e4f0;--text2:#8b90a8;--accent:#6c8cff;--accent2:#5a7ae6;--danger:#ff5c5c;--success:#4ade80;--radius:10px;--shadow:0 2px 12px rgba(0,0,0,.4)}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;line-height:1.5}
+header{background:var(--surface);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+header h1{font-size:18px;display:flex;align-items:center;gap:10px}
+header h1 span{color:var(--accent)}
+.header-info{display:flex;align-items:center;gap:16px;font-size:13px;color:var(--text2);flex-wrap:wrap}
+.hostname-box{background:var(--surface2);border:1px solid var(--border);padding:6px 14px;border-radius:6px;font-family:monospace;font-size:13px;color:var(--accent)}
+.container{padding:24px;max-width:1200px;margin:0 auto}
+.shares-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:16px}
+.share-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;cursor:pointer;transition:all .2s}
+.share-card:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 8px 24px rgba(108,140,255,.15)}
+.share-card h3{font-size:16px;margin-bottom:4px}
+.share-card p{font-size:13px;color:var(--text2)}
+.share-links{margin-top:14px;display:flex;flex-direction:column;gap:6px}
+.share-links a{font-size:13px;color:var(--accent);text-decoration:none;display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg);border-radius:6px;transition:all .2s;word-break:break-all;flex:1;min-width:0}
+.share-links a:hover{background:var(--surface2);text-decoration:underline}
+.share-links .link-label{font-size:11px;color:var(--text2);text-transform:uppercase}
+.share-links .link-row{display:flex;align-items:center;gap:6px}
+.share-links .copy-btn{flex-shrink:0;background:var(--surface2);border:1px solid var(--border);color:var(--text2);padding:6px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s;line-height:1}
+.share-links .copy-btn:hover{color:var(--accent);border-color:var(--accent);background:var(--surface)}
+/* File browser */
+#file-browser{display:none}
+#file-browser.active{display:block}
+.browser-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.browser-header h2{font-size:18px}
+.browser-header .back-btn{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;transition:all .2s}
+.browser-header .back-btn:hover{border-color:var(--accent)}
+.breadcrumb{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--text2);margin-bottom:16px;flex-wrap:wrap}
+.breadcrumb a{color:var(--accent);text-decoration:none;cursor:pointer}
+.breadcrumb a:hover{text-decoration:underline}
+.breadcrumb .sep{color:var(--border)}
+.toolbar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.toolbar button{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13px;transition:all .2s;display:flex;align-items:center;gap:6px}
+.toolbar button:hover{border-color:var(--accent);background:var(--surface)}
+.toolbar input[type=file]{display:none}
+.file-table{width:100%;border-collapse:collapse}
+.file-table th{text-align:left;padding:10px 14px;font-size:12px;text-transform:uppercase;color:var(--text2);border-bottom:1px solid var(--border);font-weight:600}
+.file-table td{padding:10px 14px;border-bottom:1px solid var(--border);font-size:14px}
+.file-table tr{cursor:pointer;transition:background .2s}
+.file-table tr:hover{background:var(--surface2)}
+.file-table .file-icon{margin-right:10px;font-size:16px}
+.file-table .file-name{display:flex;align-items:center}
+.file-table .file-size{color:var(--text2);font-size:13px}
+.file-table .file-date{color:var(--text2);font-size:13px}
+.file-table .file-actions{display:flex;gap:6px}
+.file-table .file-actions button{background:none;border:1px solid var(--border);color:var(--text2);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px;transition:all .2s}
+.file-table .file-actions button:hover{color:var(--text);border-color:var(--accent)}
+.file-table .file-actions .delete-btn:hover{color:var(--danger);border-color:var(--danger)}
+.empty-state{text-align:center;padding:40px;color:var(--text2)}
+.empty-state .icon{font-size:40px;margin-bottom:12px}
+.loading{text-align:center;padding:40px;color:var(--text2)}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:200}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:400px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.modal h3{margin-bottom:16px;font-size:17px}
+.modal input{width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:16px;outline:none}
+.modal input:focus{border-color:var(--accent)}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end}
+.modal-actions button{padding:8px 20px;border-radius:8px;cursor:pointer;font-size:13px;transition:all .2s}
+.modal-actions .btn-cancel{background:var(--surface2);border:1px solid var(--border);color:var(--text2)}
+.modal-actions .btn-cancel:hover{color:var(--text)}
+.modal-actions .btn-primary{background:var(--accent);border:none;color:#fff;font-weight:600}
+.modal-actions .btn-primary:hover{background:var(--accent2)}
+.toast-container{position:fixed;bottom:24px;right:24px;z-index:300}
+.toast{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 20px;margin-top:8px;box-shadow:var(--shadow);animation:slideIn .3s ease;font-size:14px;display:flex;align-items:center;gap:10px}
+.toast.success{border-color:var(--success)}
+.toast.error{border-color:var(--danger)}
+.toast .toast-icon{font-size:18px}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span>◉</span> DriveShare</h1>
+  <div class="header-info">
+    <span>Host:</span>
+    <span class="hostname-box" id="hostname-display">loading...</span>
+    <span class="status-dot" style="width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block"></span>
+    <span>Running</span>
+  </div>
+</header>
+
+<div class="container">
+  <div id="dashboard-view">
+    <h2 style="font-size:20px;margin-bottom:4px">Drives</h2>
+    <p style="color:var(--text2);font-size:14px">Click a drive to browse files, or share the links with other devices on your network</p>
+    <div class="shares-grid" id="shares-grid"></div>
+  </div>
+
+  <div id="file-browser">
+    <div class="browser-header">
+      <button class="back-btn" onclick="showDashboard()">← Back</button>
+      <h2 id="current-share-name"></h2>
+    </div>
+    <div class="breadcrumb" id="breadcrumb"></div>
+    <div class="toolbar">
+      <button onclick="document.getElementById('upload-input').click()">📤 Upload</button>
+      <input type="file" id="upload-input" multiple onchange="uploadFiles(this.files)">
+      <button onclick="showNewFolderModal()">📁 New Folder</button>
+    </div>
+    <div id="file-list"><div class="loading">Loading...</div></div>
+  </div>
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+<div id="modal-container"></div>
+
+<script>
+let currentShare = '';
+let currentPath = '';
+let hostname = 'localhost';
+let port = '8080';
+
+(async function initServerIp() {
+  try {
+    const res = await fetch('/api/ip');
+    if (res.ok) {
+      const data = await res.json();
+      hostname = data.ip || hostname;
+      port = String(data.port) || port;
+    }
+  } catch (_) {}
+  document.getElementById('hostname-display').textContent = hostname + ':' + port;
+})();
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  return res;
+}
+
+async function loadShares() {
+  try {
+    const res = await api('/api/shares');
+    if (!res.ok) throw new Error('Failed to load');
+    const shares = await res.json();
+    const grid = document.getElementById('shares-grid');
+    grid.innerHTML = '';
+    if (shares.length === 0) {
+      grid.innerHTML = '<div class="empty-state"><div class="icon">📁</div>No drives configured</div>';
+      return;
+    }
+    shares.forEach(s => {
+      const card = document.createElement('div');
+      card.className = 'share-card';
+      const shareUrl = `http://${hostname}:${port}/${esc(s.name)}/`;
+      const apiUrl = `http://${hostname}:${port}/api/files/${esc(s.name)}`;
+      card.innerHTML = `<h3>🗄 ${esc(s.name)}</h3><p>${esc(s.description || 'No description')}</p><div class="share-links"><span class="link-label">Share links:</span><div class="link-row"><a href="${esc(shareUrl)}" target="_blank">🔗 ${esc(shareUrl)}</a><button class="copy-btn" data-url="${esc(shareUrl)}" title="Copy link">📋</button></div><div class="link-row"><a href="${esc(apiUrl)}" target="_blank">🔗 ${esc(apiUrl)}</a><button class="copy-btn" data-url="${esc(apiUrl)}" title="Copy link">📋</button></div></div>`;
+      card.onclick = (e) => { if (!e.target.closest('a')) browseShare(s.name); };
+      grid.appendChild(card);
+    });
+  } catch (e) {
+    showToast('Failed to load drives: ' + e.message, 'error');
+  }
+}
+
+function showDashboard() {
+  document.getElementById('dashboard-view').style.display = 'block';
+  document.getElementById('file-browser').classList.remove('active');
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.copy-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  const url = btn.getAttribute('data-url');
+  if (!url) return;
+  const ta = document.createElement('textarea');
+  ta.value = url;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  ta.style.top = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    showToast('Copied!', 'success');
+  } catch (_) {
+    showToast('Copy failed', 'error');
+  }
+  ta.remove();
+});
+
+loadShares();
+}
+
+async function browseShare(name) {
+  currentShare = name;
+  currentPath = '';
+  document.getElementById('dashboard-view').style.display = 'none';
+  document.getElementById('file-browser').classList.add('active');
+  document.getElementById('current-share-name').textContent = name;
+  await loadFiles();
+}
+
+async function loadFiles() {
+  const el = document.getElementById('file-list');
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  updateBreadcrumb();
+  try {
+    const shareEnc = encodeURIComponent(currentShare);
+    const pathEnc = currentPath ? currentPath.split('/').map(p => encodeURIComponent(p)).join('/') : '';
+    const url = pathEnc ? `/api/files/${shareEnc}/${pathEnc}` : `/api/files/${shareEnc}`;
+    const res = await api(url);
+    if (!res.ok) throw new Error('Failed to load files');
+    const files = await res.json();
+    renderFiles(files);
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div>Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderFiles(files) {
+  const el = document.getElementById('file-list');
+  if (files.length === 0) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">📂</div>This folder is empty</div>';
+    return;
+  }
+  let html = '<table class="file-table"><thead><tr><th>Name</th><th>Size</th><th>Modified</th><th></th></tr></thead><tbody>';
+  files.forEach(f => {
+    const icon = f.is_dir ? '📁' : getFileIcon(f.name);
+    const size = f.is_dir ? '—' : formatSize(f.size);
+    html += `<tr class="${f.is_dir ? 'dir-row' : ''}">
+      <td class="file-name" onclick="${f.is_dir ? `navigateTo('${esc(f.name)}')` : `downloadFile('${esc(f.name)}')`}">
+        <span class="file-icon">${icon}</span>${esc(f.name)}
+      </td>
+      <td class="file-size">${size}</td>
+      <td class="file-date">${f.modified || '—'}</td>
+      <td class="file-actions">
+        ${f.is_dir ? `<button onclick="event.stopPropagation();downloadZip('${esc(f.name)}')" title="Download as ZIP">📦</button>` : `<button onclick="event.stopPropagation();downloadFile('${esc(f.name)}')">⬇</button>`}
+        <button class="delete-btn" onclick="event.stopPropagation();deleteItem('${esc(f.name)}',${f.is_dir})">✕</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function navigateTo(name) {
+  currentPath = currentPath ? currentPath + '/' + name : name;
+  loadFiles();
+}
+
+function downloadFile(name) {
+  const shareEnc = encodeURIComponent(currentShare);
+  const pathEnc = currentPath ? currentPath.split('/').map(p => encodeURIComponent(p)).join('/') : '';
+  const url = pathEnc ? `/${shareEnc}/${pathEnc}/${encodeURIComponent(name)}` : `/${shareEnc}/${encodeURIComponent(name)}`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+}
+
+function downloadZip(name) {
+  const shareEnc = encodeURIComponent(currentShare);
+  const pathEnc = currentPath ? currentPath.split('/').map(p => encodeURIComponent(p)).join('/') : '';
+  const url = pathEnc ? `/api/zip/${shareEnc}/${pathEnc}/${encodeURIComponent(name)}` : `/api/zip/${shareEnc}/${encodeURIComponent(name)}`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name + '.zip';
+  a.click();
+}
+
+async function deleteItem(name, isDir) {
+  if (!confirm(`Delete "${name}"?`)) return;
+  const shareEnc = encodeURIComponent(currentShare);
+  const pathEnc = currentPath ? currentPath.split('/').map(p => encodeURIComponent(p)).join('/') : '';
+  const url = pathEnc ? `/${shareEnc}/${pathEnc}/${encodeURIComponent(name)}` : `/${shareEnc}/${encodeURIComponent(name)}`;
+  try {
+    const res = await api(url, { method: 'DELETE' });
+    if (res.ok || res.status === 204) {
+      showToast(`Deleted "${name}"`, 'success');
+      await loadFiles();
+    } else {
+      showToast('Delete failed: ' + (await res.text()), 'error');
+    }
+  } catch (e) {
+    showToast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+async function uploadFiles(files) {
+  if (!files.length) return;
+  for (const file of files) {
+    const shareEnc = encodeURIComponent(currentShare);
+    const pathEnc = currentPath ? currentPath.split('/').map(p => encodeURIComponent(p)).join('/') : '';
+    const url = pathEnc ? `/${shareEnc}/${pathEnc}/${encodeURIComponent(file.name)}` : `/${shareEnc}/${encodeURIComponent(file.name)}`;
+    try {
+      const res = await api(url, { method: 'PUT', body: file });
+      if (!res.ok && res.status !== 201 && res.status !== 204) {
+        showToast(`Failed to upload "${file.name}"`, 'error');
+      }
+    } catch (e) {
+      showToast(`Upload failed: ${e.message}`, 'error');
+    }
+  }
+  showToast('Upload complete', 'success');
+  await loadFiles();
+}
+
+async function showNewFolderModal() {
+  const container = document.getElementById('modal-container');
+  container.innerHTML = `<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <h3>New Folder</h3>
+      <input type="text" id="new-folder-name" placeholder="Folder name" autofocus>
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" onclick="createFolder()">Create</button>
+      </div>
+    </div>
+  </div>`;
+  document.getElementById('new-folder-name').focus();
+}
+
+async function createFolder() {
+  const name = document.getElementById('new-folder-name').value.trim();
+  if (!name) return;
+  const shareEnc = encodeURIComponent(currentShare);
+  const pathEnc = currentPath ? currentPath.split('/').map(p => encodeURIComponent(p)).join('/') : '';
+  const url = pathEnc ? `/${shareEnc}/${pathEnc}/${encodeURIComponent(name)}` : `/${shareEnc}/${encodeURIComponent(name)}`;
+  try {
+    const res = await api(url, { method: 'MKCOL' });
+    if (res.ok || res.status === 201) {
+      showToast('Folder created', 'success');
+      closeModal();
+      await loadFiles();
+    } else {
+      showToast('Failed to create folder', 'error');
+    }
+  } catch (e) {
+    showToast('Failed: ' + e.message, 'error');
+  }
+}
+
+function closeModal() {
+  document.getElementById('modal-container').innerHTML = '';
+}
+
+function updateBreadcrumb() {
+  const el = document.getElementById('breadcrumb');
+  let html = `<a onclick="browseShare('${esc(currentShare)}')">${esc(currentShare)}</a>`;
+  if (currentPath) {
+    const parts = currentPath.split('/');
+    let acc = '';
+    parts.forEach((p, i) => {
+      html += `<span class="sep">/</span>`;
+      acc = acc ? acc + '/' + p : p;
+      if (i < parts.length - 1) {
+        html += `<a onclick="navigateToBreadcrumb('${esc(acc)}')">${esc(p)}</a>`;
+      } else {
+        html += `<span>${esc(p)}</span>`;
+      }
+    });
+  }
+  el.innerHTML = html;
+}
+
+function navigateToBreadcrumb(path) {
+  currentPath = path;
+  loadFiles();
+}
+
+function showToast(msg, type = 'success') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + type;
+  const icon = type === 'success' ? '✓' : '✕';
+  toast.innerHTML = `<span class="toast-icon">${icon}</span>${esc(msg)}`;
+  container.appendChild(toast);
+  setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity .3s'; setTimeout(() => toast.remove(), 300); }, 3000);
+}
+
+function getFileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  const icons = { txt:'📄', pdf:'📕', doc:'📘', docx:'📘', xls:'📗', xlsx:'📗', ppt:'📙', pptx:'📙', jpg:'🖼', jpeg:'🖼', png:'🖼', gif:'🖼', svg:'🖼', mp3:'🎵', wav:'🎵', mp4:'🎬', avi:'🎬', mov:'🎬', zip:'📦', rar:'📦', gz:'📦', tar:'📦', js:'🟨', ts:'🟦', rs:'🦀', py:'🐍', html:'🌐', css:'🎨', json:'📋', xml:'📋', md:'📝' };
+  return icons[ext] || '📄';
+}
+
+function formatSize(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+const evtSource = new EventSource('/api/events');
+let lastRefresh = 0;
+evtSource.onmessage = (e) => {
+  if (e.data === 'refresh') {
+    const now = Date.now();
+    if (now - lastRefresh > 500) {
+      lastRefresh = now;
+      const fb = document.getElementById('file-browser');
+      if (fb && fb.classList.contains('active')) {
+        loadFiles();
+      } else {
+        loadShares();
+      }
+    }
+  }
+};
+evtSource.onerror = () => console.log('SSE connection error');
+
+loadShares();
+</script>
+</body>
+</html>

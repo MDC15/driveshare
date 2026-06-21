@@ -1,0 +1,11 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+# Optional TLS configuration - uncomment to enable HTTPS
+# tls_cert = "/path/to/cert.pem"
+# tls_key = "/path/to/key.pem"
+
+[[shares]]
+name = "shared"
+path = "./shared"
+description = "Shared documents folder"
