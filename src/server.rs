@@ -1,7 +1,9 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::extract::connect_info::{ConnectInfo, IntoMakeServiceWithConnectInfo};
+use axum::routing::{any, get, post, put};
 use axum::Router;
-use axum::routing::{any, get};
 use hyper::body::Incoming;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -13,6 +15,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::config::Config;
+use crate::device_manager;
 use crate::ui;
 use crate::watcher;
 use crate::webdav::{self, AppState};
@@ -95,12 +98,14 @@ pub async fn start(config: Config) -> anyhow::Result<()> {
     let server_ip = get_local_ip();
     let (event_tx, _) = broadcast::channel::<watcher::FsEvent>(256);
     let watcher_manager = watcher::WatcherManager::new(&config.shares, event_tx.clone());
+    let device_manager = Arc::new(device_manager::DeviceManager::new());
 
     let state = AppState {
         config: Arc::new(config.clone()),
         server_ip: server_ip.clone(),
         event_tx: event_tx.clone(),
         _watchers: Arc::new(watcher_manager),
+        device_manager: device_manager.clone(),
     };
 
     let app = Router::new()
@@ -110,6 +115,10 @@ pub async fn start(config: Config) -> anyhow::Result<()> {
         .route("/api/ip", get(ui::api_ip))
         .route("/api/zip/*path", get(ui::api_zip))
         .route("/api/events", get(ui::api_events))
+        .route("/api/devices", get(ui::api_devices_list))
+        .route("/api/devices/block/:ip", post(ui::api_device_block))
+        .route("/api/devices/unblock/:ip", post(ui::api_device_unblock))
+        .route("/api/devices/permissions/:ip", put(ui::api_device_permissions))
         .route("/*path", any(webdav::handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -165,7 +174,7 @@ pub async fn start(config: Config) -> anyhow::Result<()> {
     if is_tls {
         serve_tls(listener, app, &config, event_tx.clone()).await
     } else {
-        axum::serve(listener, app)
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(graceful)
             .await?;
         info!("Server stopped.");
@@ -205,7 +214,7 @@ async fn serve_tls(
     loop {
         tokio::select! {
             result = listener.accept() => {
-                let (stream, _) = match result {
+                let (stream, peer_addr) = match result {
                     Ok(s) => s,
                     Err(e) => {
                         info!("Accept error: {}", e);
@@ -227,8 +236,10 @@ async fn serve_tls(
 
                     let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
                         let app = app.clone();
+                        let addr = peer_addr;
                         async move {
-                            let (parts, body) = req.into_parts();
+                            let (mut parts, body) = req.into_parts();
+                            parts.extensions.insert(ConnectInfo::<SocketAddr>(addr));
                             use http_body_util::BodyExt as _;
                             let body = body
                                 .map_err(|e| anyhow::Error::from(e))

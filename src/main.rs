@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod daemon;
+mod device_manager;
 mod error;
 mod server;
 mod ui;

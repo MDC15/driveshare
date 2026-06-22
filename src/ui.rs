@@ -4,12 +4,13 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, Json, Response};
 use futures::stream::Stream;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::io::Cursor;
 use zip::write::FileOptions;
 use zip::ZipWriter;
 
+use crate::device_manager::DeviceInfo;
 use crate::error::AppError;
 use crate::webdav::AppState;
 
@@ -240,4 +241,60 @@ pub async fn api_events(
         }
     });
     Sse::new(stream).keep_alive(KeepAlive::new())
+}
+
+pub async fn api_devices_list(
+    State(state): State<AppState>,
+) -> Json<Vec<DeviceInfo>> {
+    Json(state.device_manager.list_devices().await)
+}
+
+#[derive(Deserialize)]
+pub struct BlockParams {
+    ip: String,
+}
+
+pub async fn api_device_block(
+    State(state): State<AppState>,
+    Path(params): Path<BlockParams>,
+) -> Result<Json<&'static str>, AppError> {
+    if state.device_manager.block(&params.ip).await {
+        Ok(Json("Blocked"))
+    } else {
+        Err(AppError::NotFound("Device not found".to_string()))
+    }
+}
+
+pub async fn api_device_unblock(
+    State(state): State<AppState>,
+    Path(params): Path<BlockParams>,
+) -> Result<Json<&'static str>, AppError> {
+    if state.device_manager.unblock(&params.ip).await {
+        Ok(Json("Unblocked"))
+    } else {
+        Err(AppError::NotFound("Device not found".to_string()))
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PermissionBody {
+    view: bool,
+    edit: bool,
+    delete: bool,
+}
+
+pub async fn api_device_permissions(
+    State(state): State<AppState>,
+    Path(params): Path<BlockParams>,
+    Json(body): Json<PermissionBody>,
+) -> Result<Json<&'static str>, AppError> {
+    if state
+        .device_manager
+        .update_permissions(&params.ip, body.view, body.edit, body.delete)
+        .await
+    {
+        Ok(Json("Updated"))
+    } else {
+        Err(AppError::NotFound("Device not found".to_string()))
+    }
 }

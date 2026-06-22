@@ -1,9 +1,10 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use axum::body::Bytes;
-use axum::extract::{Request, State};
+use axum::extract::{connect_info::ConnectInfo, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::Response;
 use chrono::{DateTime, Utc};
@@ -12,6 +13,7 @@ use tokio::sync::broadcast;
 use url::Url;
 
 use crate::config::Config;
+use crate::device_manager;
 use crate::error::AppError;
 use crate::watcher;
 
@@ -21,6 +23,7 @@ pub struct AppState {
     pub server_ip: String,
     pub event_tx: broadcast::Sender<watcher::FsEvent>,
     pub _watchers: Arc<watcher::WatcherManager>,
+    pub device_manager: Arc<device_manager::DeviceManager>,
 }
 
 type AppResult = Result<Response, AppError>;
@@ -100,12 +103,52 @@ pub async fn handler(
     State(state): State<AppState>,
     req: Request,
 ) -> AppResult {
-    let path = req.uri().path().trim_start_matches('/').to_string();
+    let client_ip = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let user_agent = req
+        .headers()
+        .get("User-Agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("Unknown")
+        .to_string();
+
+    if state.device_manager.is_blocked(&client_ip).await {
+        return Err(AppError::Forbidden(
+            "Device is blocked by administrator".to_string(),
+        ));
+    }
+
+    state.device_manager.record_device(&client_ip, &user_agent).await;
+
     let method = req.method().clone();
+    let permission = match method.as_str() {
+        "GET" | "HEAD" => Some("view"),
+        "PROPFIND" => Some("view"),
+        "PUT" => Some("edit"),
+        "MKCOL" => Some("edit"),
+        "COPY" => Some("edit"),
+        "MOVE" => Some("edit"),
+        "DELETE" => Some("delete"),
+        _ => None,
+    };
+    if let Some(action) = permission {
+        if !state.device_manager.check_permission(&client_ip, action).await {
+            return Err(AppError::Forbidden(format!(
+                "Access denied: {} permission required",
+                action
+            )));
+        }
+    }
+
+    let path = req.uri().path().trim_start_matches('/').to_string();
     let (parts, body) = req.into_parts();
     let headers = parts.headers.clone();
 
-    let body_bytes = match axum::body::to_bytes(body, 50 * 1024 * 1024).await {
+    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
         Ok(b) => b,
         Err(e) => {
             return Err(AppError::Internal(format!("Failed to read body: {}", e)));
