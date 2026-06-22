@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::connect_info::{ConnectInfo, IntoMakeServiceWithConnectInfo};
+use axum::extract::connect_info::ConnectInfo;
 use axum::routing::{any, get, post, put};
 use axum::Router;
 use hyper::body::Incoming;
