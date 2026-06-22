@@ -1,6 +1,5 @@
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::path::Path;
-use std::sync::Mutex;
 use tokio::sync::broadcast;
 use tracing::info;
 
@@ -8,13 +7,12 @@ use crate::config::ShareConfig;
 
 #[derive(Debug, Clone)]
 pub struct FsEvent {
-    #[allow(dead_code)]
     pub kind: String,
 }
 
 pub struct WatcherManager {
     #[allow(dead_code)]
-    watchers: Mutex<Vec<notify::RecommendedWatcher>>,
+    watchers: Vec<notify::RecommendedWatcher>,
 }
 
 impl WatcherManager {
@@ -58,8 +56,6 @@ impl WatcherManager {
             watchers.push(watcher);
         }
 
-        WatcherManager {
-            watchers: Mutex::new(watchers),
-        }
+        WatcherManager { watchers }
     }
 }

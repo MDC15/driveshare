@@ -1,9 +1,13 @@
+use std::net::SocketAddr;
+
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{connect_info::ConnectInfo, Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, Json, Response};
 use futures::stream::Stream;
+use qrcode::render::svg;
+use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::io::Cursor;
@@ -44,8 +48,13 @@ pub struct FileEntry {
     pub modified: String,
 }
 
-pub async fn dashboard() -> Html<&'static str> {
-    Html(include_str!("dashboard.html"))
+pub async fn dashboard(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Html<String> {
+    let is_dashboard = addr.ip().is_loopback() || addr.ip().to_string() == state.server_ip;
+    let ui_mode = if is_dashboard { "dashboard" } else { "client" };
+    Html(include_str!("../templates/dashboard.html").replace("__UI_MODE__", ui_mode))
 }
 
 pub async fn api_shares(
@@ -62,6 +71,42 @@ pub async fn api_shares(
         })
         .collect();
     Json(shares)
+}
+
+pub async fn api_share_qr(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Response, AppError> {
+    let share = state
+        .config
+        .share_by_name(&name)
+        .ok_or_else(|| AppError::NotFound(format!("Share '{}' not found", name)))?;
+
+    let share_url = format!(
+        "{}://{}:{}/{}/",
+        state.protocol,
+        state.server_ip,
+        state.config.server.port,
+        urlencoding::encode(&share.name)
+    );
+
+    let code = QrCode::new(share_url.as_bytes())
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let svg = code
+        .render::<svg::Color>()
+        .min_dimensions(320, 320)
+        .dark_color(svg::Color("#000000"))
+        .light_color(svg::Color("#ffffff"))
+        .build();
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "image/svg+xml")
+        .header("Cache-Control", "no-store")
+        .body(Body::from(svg))
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(response)
 }
 
 pub async fn api_files(
@@ -245,8 +290,22 @@ pub async fn api_events(
 
 pub async fn api_devices_list(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Json<Vec<DeviceInfo>> {
-    Json(state.device_manager.list_devices().await)
+    let mut devices = state.device_manager.list_devices().await;
+    let client_ip = addr.ip().to_string();
+    for device in &mut devices {
+        if device.ip == client_ip {
+            device.is_self = true;
+        }
+    }
+    Json(devices)
+}
+
+pub async fn api_devices_online(
+    State(state): State<AppState>,
+) -> Json<Vec<DeviceInfo>> {
+    Json(state.device_manager.list_online_devices().await)
 }
 
 #[derive(Deserialize)]
