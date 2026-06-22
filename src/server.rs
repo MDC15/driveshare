@@ -116,6 +116,7 @@ pub async fn start(config: Config) -> anyhow::Result<()> {
         .route("/api/zip/*path", get(ui::api_zip))
         .route("/api/events", get(ui::api_events))
         .route("/api/devices", get(ui::api_devices_list))
+        .route("/api/devices/online", get(ui::api_devices_online))
         .route("/api/devices/block/:ip", post(ui::api_device_block))
         .route("/api/devices/unblock/:ip", post(ui::api_device_unblock))
         .route("/api/devices/permissions/:ip", put(ui::api_device_permissions))

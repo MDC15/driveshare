@@ -1,5 +1,7 @@
+use std::net::SocketAddr;
+
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{connect_info::ConnectInfo, Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, Json, Response};
@@ -22,7 +24,19 @@ pub struct ServerIpInfo {
 
 pub async fn api_ip(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Json<ServerIpInfo> {
+    let client_ip = addr.ip().to_string();
+    state.device_manager.record_device(&client_ip, "Dashboard", "").await;
+    if client_ip != "unknown" && client_ip != "127.0.0.1" && client_ip != "::1" {
+        let dm = state.device_manager.clone();
+        tokio::spawn(async move {
+            let hostname = crate::device_manager::DeviceManager::resolve_hostname(&client_ip).await;
+            if !hostname.is_empty() {
+                dm.record_device(&client_ip, "", &hostname).await;
+            }
+        });
+    }
     Json(ServerIpInfo {
         ip: state.server_ip.clone(),
         port: state.config.server.port,
@@ -44,13 +58,30 @@ pub struct FileEntry {
     pub modified: String,
 }
 
-pub async fn dashboard() -> Html<&'static str> {
+pub async fn dashboard(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Html<&'static str> {
+    let client_ip = addr.ip().to_string();
+    state.device_manager.record_device(&client_ip, "Dashboard", "").await;
+    if client_ip != "unknown" && client_ip != "127.0.0.1" && client_ip != "::1" {
+        let dm = state.device_manager.clone();
+        tokio::spawn(async move {
+            let hostname = crate::device_manager::DeviceManager::resolve_hostname(&client_ip).await;
+            if !hostname.is_empty() {
+                dm.record_device(&client_ip, "", &hostname).await;
+            }
+        });
+    }
     Html(include_str!("dashboard.html"))
 }
 
 pub async fn api_shares(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Json<Vec<ShareInfo>> {
+    let client_ip = addr.ip().to_string();
+    state.device_manager.record_device(&client_ip, "API", "").await;
     let shares = state
         .config
         .shares
@@ -66,8 +97,11 @@ pub async fn api_shares(
 
 pub async fn api_files(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(path): Path<String>,
 ) -> Result<Json<Vec<FileEntry>>, AppError> {
+    let client_ip = addr.ip().to_string();
+    state.device_manager.record_device(&client_ip, "API", "").await;
     let path = path.trim_start_matches('/');
     let parts: Vec<&str> = path.splitn(2, '/').collect();
     let share_name = parts[0];
@@ -245,8 +279,22 @@ pub async fn api_events(
 
 pub async fn api_devices_list(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Json<Vec<DeviceInfo>> {
-    Json(state.device_manager.list_devices().await)
+    let mut devices = state.device_manager.list_devices().await;
+    let client_ip = addr.ip().to_string();
+    for device in &mut devices {
+        if device.ip == client_ip {
+            device.is_self = true;
+        }
+    }
+    Json(devices)
+}
+
+pub async fn api_devices_online(
+    State(state): State<AppState>,
+) -> Json<Vec<DeviceInfo>> {
+    Json(state.device_manager.list_online_devices().await)
 }
 
 #[derive(Deserialize)]

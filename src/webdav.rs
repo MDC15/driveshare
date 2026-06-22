@@ -99,16 +99,31 @@ fn get_content_type(path: &std::path::Path) -> String {
     }
 }
 
+fn get_client_ip(req: &Request) -> String {
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip().to_string())
+        .or_else(|| {
+            req.headers()
+                .get("X-Real-IP")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            req.headers()
+                .get("X-Forwarded-For")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split(',').next())
+                .map(|s| s.trim().to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 pub async fn handler(
     State(state): State<AppState>,
     req: Request,
 ) -> AppResult {
-    let client_ip = req
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|c| c.0.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
+    let client_ip = get_client_ip(&req);
     let user_agent = req
         .headers()
         .get("User-Agent")
@@ -122,7 +137,19 @@ pub async fn handler(
         ));
     }
 
-    state.device_manager.record_device(&client_ip, &user_agent).await;
+    state.device_manager.record_device(&client_ip, &user_agent, "").await;
+
+    // Resolve hostname in background
+    if client_ip != "unknown" && client_ip != "127.0.0.1" && client_ip != "::1" {
+        let dm = state.device_manager.clone();
+        let ip = client_ip.clone();
+        tokio::spawn(async move {
+            let hostname = device_manager::DeviceManager::resolve_hostname(&ip).await;
+            if !hostname.is_empty() {
+                dm.record_device(&ip, "", &hostname).await;
+            }
+        });
+    }
 
     let method = req.method().clone();
     let permission = match method.as_str() {
