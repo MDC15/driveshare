@@ -1,7 +1,11 @@
+pub mod tls;
+pub use tls::ensure_self_signed_cert;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::connect_info::ConnectInfo;
+use axum::middleware;
 use axum::routing::{any, get, post, put};
 use axum::Router;
 use hyper::body::Incoming;
@@ -19,6 +23,8 @@ use crate::device_manager;
 use crate::ui;
 use crate::watcher;
 use crate::webdav::{self, AppState};
+
+use self::tls::{load_certs, load_key};
 
 fn is_wsl() -> bool {
     std::env::var("WSL_DISTRO_NAME").is_ok()
@@ -46,7 +52,7 @@ fn get_windows_ip() -> Option<String> {
     None
 }
 
-fn get_local_ip() -> String {
+pub fn get_local_ip() -> String {
     if is_wsl() {
         if let Some(ip) = get_windows_ip() {
             return ip;
@@ -66,26 +72,6 @@ fn get_local_ip() -> String {
     }
 }
 
-fn load_certs(path: &str) -> anyhow::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
-    let certfile = std::fs::File::open(path)
-        .map_err(|e| anyhow::anyhow!("Failed to open cert file '{}': {}", path, e))?;
-    let mut reader = std::io::BufReader::new(certfile);
-    let certs = rustls_pemfile::certs(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| anyhow::anyhow!("Failed to load certs: {}", e))?;
-    Ok(certs)
-}
-
-fn load_key(path: &str) -> anyhow::Result<rustls::pki_types::PrivateKeyDer<'static>> {
-    let keyfile = std::fs::File::open(path)
-        .map_err(|e| anyhow::anyhow!("Failed to open key file '{}': {}", path, e))?;
-    let mut reader = std::io::BufReader::new(keyfile);
-    let key = rustls_pemfile::private_key(&mut reader)
-        .map_err(|e| anyhow::anyhow!("Failed to load private key: {}", e))?
-        .ok_or_else(|| anyhow::anyhow!("No private key found in '{}'", path))?;
-    Ok(key)
-}
-
 pub async fn start(config: Config) -> anyhow::Result<()> {
     for share in &config.shares {
         let path = std::path::Path::new(&share.path);
@@ -96,6 +82,11 @@ pub async fn start(config: Config) -> anyhow::Result<()> {
     }
 
     let server_ip = get_local_ip();
+    let protocol = if config.server.tls_cert.is_some() && config.server.tls_key.is_some() {
+        "https"
+    } else {
+        "http"
+    };
     let (event_tx, _) = broadcast::channel::<watcher::FsEvent>(256);
     let watcher_manager = watcher::WatcherManager::new(&config.shares, event_tx.clone());
     let device_manager = Arc::new(device_manager::DeviceManager::new());
@@ -103,6 +94,7 @@ pub async fn start(config: Config) -> anyhow::Result<()> {
     let state = AppState {
         config: Arc::new(config.clone()),
         server_ip: server_ip.clone(),
+        protocol: protocol.to_string(),
         event_tx: event_tx.clone(),
         _watchers: Arc::new(watcher_manager),
         device_manager: device_manager.clone(),
@@ -111,6 +103,7 @@ pub async fn start(config: Config) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/", get(ui::dashboard))
         .route("/api/shares", get(ui::api_shares))
+        .route("/api/shares/:name/qr.svg", get(ui::api_share_qr))
         .route("/api/files/*path", get(ui::api_files))
         .route("/api/ip", get(ui::api_ip))
         .route("/api/zip/*path", get(ui::api_zip))
@@ -121,6 +114,7 @@ pub async fn start(config: Config) -> anyhow::Result<()> {
         .route("/api/devices/unblock/:ip", post(ui::api_device_unblock))
         .route("/api/devices/permissions/:ip", put(ui::api_device_permissions))
         .route("/*path", any(webdav::handler))
+        .layer(middleware::from_fn_with_state(state.clone(), webdav::track_device_request))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -246,10 +240,7 @@ async fn serve_tls(
                                 .map_err(|e| anyhow::Error::from(e))
                                 .boxed();
                             let req = axum::http::Request::from_parts(parts, body);
-                            let res = match ServiceExt::oneshot(app, req).await {
-                                Ok(r) => r,
-                                Err(e) => match e {},
-                            };
+                            let res = ServiceExt::oneshot(app, req).await.unwrap();
                             Ok::<_, anyhow::Error>(res)
                         }
                     });
@@ -273,40 +264,6 @@ async fn serve_tls(
 
     info!("Server stopped.");
     Ok(())
-}
-
-pub fn ensure_self_signed_cert(cfg: &mut crate::config::Config) -> anyhow::Result<()> {
-    if cfg.server.tls_cert.is_some() && cfg.server.tls_key.is_some() {
-        return Ok(());
-    }
-
-    let cert_dir = directories::ProjectDirs::from("com", "driveshare", "driveshare")
-        .map(|d| d.config_dir().join("tls"))
-        .unwrap_or_else(|| std::path::PathBuf::from("./tls"));
-    std::fs::create_dir_all(&cert_dir)?;
-
-    let cert_file = cert_dir.join("cert.pem");
-    let key_file = cert_dir.join("key.pem");
-
-    if !cert_file.exists() || !key_file.exists() {
-        let lan_ip = get_local_ip();
-        let (cert_pem, key_pem) = generate_self_signed_cert(&["localhost", "127.0.0.1", &lan_ip])?;
-        std::fs::write(&cert_file, &cert_pem)?;
-        std::fs::write(&key_file, &key_pem)?;
-    }
-
-    cfg.server.tls_cert = Some(cert_file.to_string_lossy().to_string());
-    cfg.server.tls_key = Some(key_file.to_string_lossy().to_string());
-
-    Ok(())
-}
-
-fn generate_self_signed_cert(sans: &[&str]) -> anyhow::Result<(String, String)> {
-    let sans: Vec<String> = sans.iter().map(|s| s.to_string()).collect();
-    let cert = rcgen::generate_simple_self_signed(sans)?;
-    let cert_pem = cert.serialize_pem()?;
-    let key_pem = cert.get_key_pair().serialize_pem();
-    Ok((cert_pem, key_pem))
 }
 
 async fn shutdown_signal() {

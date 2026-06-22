@@ -38,9 +38,10 @@ impl DeviceManager {
         }
     }
 
-    pub async fn record_device(&self, ip: &str, name: &str, hostname: &str) {
+    pub async fn record_device(&self, ip: &str, name: &str, hostname: &str) -> bool {
         let mut devices = self.devices.write().await;
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let is_new = !devices.contains_key(ip);
         devices
             .entry(ip.to_string())
             .and_modify(|e| {
@@ -77,6 +78,7 @@ impl DeviceManager {
                 },
                 last_seen_instant: Instant::now(),
             });
+            is_new
     }
 
     fn update_online_status(devices: &mut HashMap<String, DeviceEntry>) {

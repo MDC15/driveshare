@@ -6,6 +6,8 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, Json, Response};
 use futures::stream::Stream;
+use qrcode::render::svg;
+use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::io::Cursor;
@@ -24,19 +26,7 @@ pub struct ServerIpInfo {
 
 pub async fn api_ip(
     State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Json<ServerIpInfo> {
-    let client_ip = addr.ip().to_string();
-    state.device_manager.record_device(&client_ip, "Dashboard", "").await;
-    if client_ip != "unknown" && client_ip != "127.0.0.1" && client_ip != "::1" {
-        let dm = state.device_manager.clone();
-        tokio::spawn(async move {
-            let hostname = crate::device_manager::DeviceManager::resolve_hostname(&client_ip).await;
-            if !hostname.is_empty() {
-                dm.record_device(&client_ip, "", &hostname).await;
-            }
-        });
-    }
     Json(ServerIpInfo {
         ip: state.server_ip.clone(),
         port: state.config.server.port,
@@ -61,27 +51,15 @@ pub struct FileEntry {
 pub async fn dashboard(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-) -> Html<&'static str> {
-    let client_ip = addr.ip().to_string();
-    state.device_manager.record_device(&client_ip, "Dashboard", "").await;
-    if client_ip != "unknown" && client_ip != "127.0.0.1" && client_ip != "::1" {
-        let dm = state.device_manager.clone();
-        tokio::spawn(async move {
-            let hostname = crate::device_manager::DeviceManager::resolve_hostname(&client_ip).await;
-            if !hostname.is_empty() {
-                dm.record_device(&client_ip, "", &hostname).await;
-            }
-        });
-    }
-    Html(include_str!("dashboard.html"))
+) -> Html<String> {
+    let is_dashboard = addr.ip().is_loopback() || addr.ip().to_string() == state.server_ip;
+    let ui_mode = if is_dashboard { "dashboard" } else { "client" };
+    Html(include_str!("../templates/dashboard.html").replace("__UI_MODE__", ui_mode))
 }
 
 pub async fn api_shares(
     State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Json<Vec<ShareInfo>> {
-    let client_ip = addr.ip().to_string();
-    state.device_manager.record_device(&client_ip, "API", "").await;
     let shares = state
         .config
         .shares
@@ -95,13 +73,46 @@ pub async fn api_shares(
     Json(shares)
 }
 
+pub async fn api_share_qr(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Response, AppError> {
+    let share = state
+        .config
+        .share_by_name(&name)
+        .ok_or_else(|| AppError::NotFound(format!("Share '{}' not found", name)))?;
+
+    let share_url = format!(
+        "{}://{}:{}/{}/",
+        state.protocol,
+        state.server_ip,
+        state.config.server.port,
+        urlencoding::encode(&share.name)
+    );
+
+    let code = QrCode::new(share_url.as_bytes())
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let svg = code
+        .render::<svg::Color>()
+        .min_dimensions(320, 320)
+        .dark_color(svg::Color("#000000"))
+        .light_color(svg::Color("#ffffff"))
+        .build();
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "image/svg+xml")
+        .header("Cache-Control", "no-store")
+        .body(Body::from(svg))
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(response)
+}
+
 pub async fn api_files(
     State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(path): Path<String>,
 ) -> Result<Json<Vec<FileEntry>>, AppError> {
-    let client_ip = addr.ip().to_string();
-    state.device_manager.record_device(&client_ip, "API", "").await;
     let path = path.trim_start_matches('/');
     let parts: Vec<&str> = path.splitn(2, '/').collect();
     let share_name = parts[0];

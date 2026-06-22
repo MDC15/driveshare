@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{connect_info::ConnectInfo, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode};
+use axum::middleware::Next;
 use axum::response::Response;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -21,6 +22,7 @@ use crate::watcher;
 pub struct AppState {
     pub config: Arc<Config>,
     pub server_ip: String,
+    pub protocol: String,
     pub event_tx: broadcast::Sender<watcher::FsEvent>,
     pub _watchers: Arc<watcher::WatcherManager>,
     pub device_manager: Arc<device_manager::DeviceManager>,
@@ -78,7 +80,7 @@ fn format_http_date(time: SystemTime) -> String {
     datetime.format("%a, %d %b %Y %H:%M:%S GMT").to_string()
 }
 
-fn compute_etat(metadata: &std::fs::Metadata) -> String {
+fn compute_etag(metadata: &std::fs::Metadata) -> String {
     let mut hasher = Sha256::new();
     hasher.update(metadata.len().to_be_bytes());
     if let Ok(mtime) = metadata.modified() {
@@ -124,31 +126,11 @@ pub async fn handler(
     req: Request,
 ) -> AppResult {
     let client_ip = get_client_ip(&req);
-    let user_agent = req
-        .headers()
-        .get("User-Agent")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("Unknown")
-        .to_string();
 
     if state.device_manager.is_blocked(&client_ip).await {
         return Err(AppError::Forbidden(
             "Device is blocked by administrator".to_string(),
         ));
-    }
-
-    state.device_manager.record_device(&client_ip, &user_agent, "").await;
-
-    // Resolve hostname in background
-    if client_ip != "unknown" && client_ip != "127.0.0.1" && client_ip != "::1" {
-        let dm = state.device_manager.clone();
-        let ip = client_ip.clone();
-        tokio::spawn(async move {
-            let hostname = device_manager::DeviceManager::resolve_hostname(&ip).await;
-            if !hostname.is_empty() {
-                dm.record_device(&ip, "", &hostname).await;
-            }
-        });
     }
 
     let method = req.method().clone();
@@ -183,27 +165,64 @@ pub async fn handler(
     };
 
     let st = state.clone();
-    let p = path.clone();
 
     match method {
-        Method::OPTIONS => options_handler(st, p).await,
-        Method::GET => get_handler(st, p).await,
-        Method::HEAD => head_handler(st, p).await,
-        Method::PUT => put_handler(st, p, body_bytes).await,
-        Method::DELETE => delete_handler(st, p).await,
-        m if m.as_str() == "PROPFIND" => propfind_handler(st, p, headers, &body_bytes).await,
-        m if m.as_str() == "MKCOL" => mkcol_handler(st, p).await,
-        m if m.as_str() == "COPY" => copy_handler(st, p, headers).await,
-        m if m.as_str() == "MOVE" => move_handler(st, p, headers).await,
+        Method::OPTIONS => options_handler(st, path).await,
+        Method::GET => get_handler(st, path).await,
+        Method::HEAD => head_handler(st, path).await,
+        Method::PUT => put_handler(st, path, body_bytes).await,
+        Method::DELETE => delete_handler(st, path).await,
+        m if m.as_str() == "PROPFIND" => propfind_handler(st, path, headers, &body_bytes).await,
+        m if m.as_str() == "MKCOL" => mkcol_handler(st, path).await,
+        m if m.as_str() == "COPY" => copy_handler(st, path, headers).await,
+        m if m.as_str() == "MOVE" => move_handler(st, path, headers).await,
         m if m.as_str() == "PROPPATCH" => proppatch_handler().await,
         _ => {
             let resp = Response::builder()
                 .status(StatusCode::METHOD_NOT_ALLOWED)
-                .body(axum::body::Body::from("Method not allowed"))
+                .body(Body::from("Method not allowed"))
                 .unwrap();
             Ok(resp)
         }
     }
+}
+
+pub async fn track_device_request(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let client_ip = get_client_ip(&req);
+    let user_agent = req
+        .headers()
+        .get("User-Agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("Unknown")
+        .to_string();
+
+    if !state.device_manager.is_blocked(&client_ip).await {
+        let is_new_device = state
+            .device_manager
+            .record_device(&client_ip, &user_agent, "")
+            .await;
+
+        if is_new_device {
+            let _ = state.event_tx.send(watcher::FsEvent { kind: "device_new".to_string() });
+        }
+
+        if client_ip != "unknown" && client_ip != "127.0.0.1" && client_ip != "::1" {
+            let dm = state.device_manager.clone();
+            let ip = client_ip.clone();
+            tokio::spawn(async move {
+                let hostname = device_manager::DeviceManager::resolve_hostname(&ip).await;
+                if !hostname.is_empty() {
+                    let _ = dm.record_device(&ip, "", &hostname).await;
+                }
+            });
+        }
+    }
+
+    next.run(req).await
 }
 
 async fn options_handler(
@@ -221,7 +240,7 @@ async fn options_handler(
         .header("DAV", "1, 2")
         .header("Allow", allowed)
         .header("Content-Length", "0")
-        .body(axum::body::Body::empty())
+        .body(Body::empty())
         .unwrap();
     Ok(resp)
 }
@@ -245,7 +264,7 @@ async fn get_handler(
 
     let metadata = tokio::fs::metadata(&full_path).await?;
     let content_type = get_content_type(&full_path);
-    let etag = compute_etat(&metadata);
+    let etag = compute_etag(&metadata);
     let modified = metadata
         .modified()
         .map(|t| format_http_date(t))
@@ -259,17 +278,17 @@ async fn get_handler(
         .header("ETag", etag)
         .header("Last-Modified", modified)
         .header("Accept-Ranges", "bytes")
-        .body(axum::body::Body::from(content))
+        .body(Body::from(content))
         .unwrap();
     Ok(resp)
 }
 
 async fn list_directory(_url_path: &str, _dir_path: &std::path::Path) -> AppResult {
-    let html = include_str!("browser.html");
+    let html = include_str!("../templates/browser.html");
     let resp = Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/html; charset=utf-8")
-        .body(axum::body::Body::from(html))
+        .body(Body::from(html))
         .unwrap();
     Ok(resp)
 }
@@ -289,7 +308,7 @@ async fn head_handler(
 
     let metadata = tokio::fs::metadata(&full_path).await?;
     let content_type = get_content_type(&full_path);
-    let etag = compute_etat(&metadata);
+    let etag = compute_etag(&metadata);
     let modified = metadata
         .modified()
         .map(|t| format_http_date(t))
@@ -301,7 +320,7 @@ async fn head_handler(
         .header("Content-Length", metadata.len().to_string())
         .header("ETag", etag)
         .header("Last-Modified", modified)
-        .body(axum::body::Body::empty())
+        .body(Body::empty())
         .unwrap();
     Ok(resp)
 }
@@ -321,12 +340,12 @@ async fn put_handler(
     let _ = state.event_tx.send(watcher::FsEvent { kind: "modify".to_string() });
 
     let metadata = tokio::fs::metadata(&full_path).await?;
-    let etag = compute_etat(&metadata);
+    let etag = compute_etag(&metadata);
 
     let resp = Response::builder()
         .status(StatusCode::CREATED)
         .header("ETag", etag)
-        .body(axum::body::Body::from("Created"))
+        .body(Body::from("Created"))
         .unwrap();
     Ok(resp)
 }
@@ -353,7 +372,7 @@ async fn delete_handler(
 
     let resp = Response::builder()
         .status(StatusCode::NO_CONTENT)
-        .body(axum::body::Body::empty())
+        .body(Body::empty())
         .unwrap();
     Ok(resp)
 }
@@ -373,7 +392,7 @@ async fn mkcol_handler(
 
     let resp = Response::builder()
         .status(StatusCode::CREATED)
-        .body(axum::body::Body::from("Created"))
+        .body(Body::from("Created"))
         .unwrap();
     Ok(resp)
 }
@@ -387,7 +406,7 @@ fn props_to_xml(
     let content_type = get_content_type(path);
     let content_length = if is_dir { 0 } else { metadata.len() };
     let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    let etag = compute_etat(metadata);
+    let etag = compute_etag(metadata);
     let display_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -525,7 +544,7 @@ async fn propfind_handler(
         .status(StatusCode::MULTI_STATUS)
         .header("Content-Type", "application/xml; charset=\"utf-8\"")
         .header("DAV", "1, 2")
-        .body(axum::body::Body::from(xml))
+        .body(Body::from(xml))
         .unwrap();
     Ok(resp)
 }
@@ -631,7 +650,7 @@ async fn copy_handler(
 
     let resp = Response::builder()
         .status(status)
-        .body(axum::body::Body::empty())
+        .body(Body::empty())
         .unwrap();
     Ok(resp)
 }
@@ -666,7 +685,7 @@ async fn move_handler(
 
     let resp = Response::builder()
         .status(status)
-        .body(axum::body::Body::empty())
+        .body(Body::empty())
         .unwrap();
     Ok(resp)
 }
